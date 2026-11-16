@@ -1,0 +1,60 @@
+name: Release recovery lab
+
+on:
+  push:
+    branches: [release-recovery-lab]
+    paths:
+      - '.github/workflows/release-recovery.yml'
+      - 'labs/release-recovery/**'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  release-recovery:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: labs/release-recovery
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+          cache: false
+      - uses: azure/setup-kubectl@v4
+        with:
+          version: 'v1.34.1'
+      - name: Build and scan the container
+        shell: bash
+        run: |
+          mkdir -p "$RUNNER_TEMP/release-lab"
+          python -m pip install -r requirements.txt
+          docker build --pull --tag release-demo:lab .
+          archive=$(mktemp)
+          trap 'rm -f "$archive"' EXIT
+          docker save release-demo:lab --output "$archive"
+          docker run --rm --mount "type=bind,source=$archive,target=/image.tar,readonly" \
+            ghcr.io/aquasecurity/trivy:0.73.0 image --input /image.tar \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            | tee "$RUNNER_TEMP/release-lab/trivy.txt"
+      - name: Verify rollout failure and recovery in kind
+        shell: bash
+        run: |
+          export GOBIN="$RUNNER_TEMP/release-lab-bin"
+          mkdir -p "$GOBIN"
+          go install sigs.k8s.io/kind@v0.30.0
+          export PATH="$GOBIN:$PATH"
+          bash exercise.sh "$RUNNER_TEMP/release-lab"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: release-lab
+          path: ${{ runner.temp }}/release-lab
