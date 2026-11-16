@@ -1,15 +1,14 @@
 # Kubernetes runbook assistant
 
-This lab is a local FastAPI service for three troubleshooting topics: stalled
-Deployments, pod probes and Services with missing backends. It returns a
-curated note with an official Kubernetes documentation link. An unsupported
-or ambiguous question returns a request for clarification.
+This local FastAPI service covers stalled rollouts, probes, Services with missing
+backends, EndpointSlices and rolling update settings. It returns a curated note
+and its official Kubernetes documentation link. Unsupported questions prompt
+for clarification.
 
-The baseline uses deterministic phrase matching over curated Kubernetes notes.
-There is no model, vector database, Kubernetes connection or tool executor.
-The notes and their citations are bundled in the app, so request text and
-external content cannot supply links or instructions to execute. This lets
-you test the response contract before integrating a model.
+The default mode uses phrase matching over curated notes. It asks for
+clarification when more than one topic matches. The optional Ollama mode
+can select one retrieved topic in that case. Both modes return only bundled
+answers and citations. The API exposes no Kubernetes connection or action tools.
 
 ## Run locally
 
@@ -31,15 +30,23 @@ curl http://127.0.0.1:8000/ask \
   -d '{"question":"Why did my rollout stall?"}'
 ```
 
-The tests cover valid citations, ambiguous and unsupported questions,
-malicious text that tries to substitute a citation, and rejected request
-fields and sizes. Retrieval is limited to the curated topics. Phrase matching
-can misclassify a question that mentions a supported term.
+## Optional local model
 
-## When adding an LLM
+Start Ollama and pull an instruction model that supports structured output.
+Set `RUNBOOK_OLLAMA_MODEL` to its installed name before starting the API.
 
-Keep retrieval separate from generation. Treat retrieved documents as data,
-validate every citation against IDs returned by retrieval, and return
-`needs_clarification` when the evidence is insufficient. Keep the first agent
-limited to read-only runbook lookup. Re-run the API contract tests with the
-model enabled and add cases for untrusted text inside retrieved documents.
+```bash
+ollama pull llama3.2:3b
+RUNBOOK_OLLAMA_MODEL=llama3.2:3b python -m uvicorn app:app --host 127.0.0.1 --port 8000
+```
+
+Try an ambiguous question such as "Should I check the rollout or the readiness
+probe?" The API uses the local Ollama endpoint on port 11434 and asks only for
+a candidate ID or null. IDs outside the retrieved set, extra fields, malformed
+JSON, network errors, and null selections all result in clarification. The
+model can still pick an eligible topic that is less relevant to the question.
+
+The test suite exercises the Ollama HTTP contract with a stub, including
+adversarial candidate metadata, invalid model responses and connection
+failures. A live model run and arbitrary document ingestion are separate
+from the tested lab.
