@@ -1,0 +1,50 @@
+trigger: none
+pr: none
+
+pool:
+  vmImage: ubuntu-latest
+
+jobs:
+  - job: ReleaseRecoveryLab
+    displayName: Build, scan and verify rollback
+    timeoutInMinutes: 25
+    steps:
+      - task: UsePythonVersion@0
+        inputs:
+          versionSpec: '3.12'
+      - task: KubectlInstaller@0
+        inputs:
+          kubectlVersion: '1.34.1'
+      - bash: |
+          set -euo pipefail
+          mkdir -p "$EVIDENCE"
+          python -m pip install -r requirements.txt
+          docker build --pull --tag release-demo:lab .
+          archive=$(mktemp)
+          trap 'rm -f "$archive"' EXIT
+          docker save release-demo:lab --output "$archive"
+          docker run --rm --mount "type=bind,source=$archive,target=/image.tar,readonly" \
+            ghcr.io/aquasecurity/trivy:0.73.0 image --input /image.tar \
+            --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1 \
+            | tee "$EVIDENCE/trivy.txt"
+        displayName: Build the demo and scan for fixable vulnerabilities
+        workingDirectory: $(Build.SourcesDirectory)/labs/release-recovery
+        env:
+          EVIDENCE: $(Build.ArtifactStagingDirectory)/release-lab
+      - bash: |
+          set -euo pipefail
+          export GOBIN="$AGENT_TEMPDIRECTORY/release-lab-bin"
+          mkdir -p "$GOBIN"
+          go install sigs.k8s.io/kind@v0.30.0
+          export PATH="$GOBIN:$PATH"
+          bash exercise.sh "$EVIDENCE"
+        displayName: Exercise a failed rollout and verify recovery in kind
+        workingDirectory: $(Build.SourcesDirectory)/labs/release-recovery
+        env:
+          EVIDENCE: $(Build.ArtifactStagingDirectory)/release-lab
+      - task: PublishPipelineArtifact@1
+        displayName: Publish scan, smoke-test and rollout evidence
+        condition: always()
+        inputs:
+          targetPath: $(Build.ArtifactStagingDirectory)/release-lab
+          artifact: release-lab
